@@ -61,8 +61,9 @@ gui_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(mess
 logger.addHandler(gui_handler)
 
 # ------------------ ПУТИ ------------------
-KYOCERA_PATH_RAW = r"C:\Users\%username%\AppData\Roaming\Kyocera\KM_TWAIN"
-KYOCERA_PATH = os.path.expandvars(KYOCERA_PATH_RAW)
+# Используем переменную окружения APPDATA для универсальности (работает для любого пользователя)
+KYOCERA_PATH_RAW = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "Kyocera", "KM_TWAIN")
+KYOCERA_PATH = KYOCERA_PATH_RAW
 
 # Файл пресетов на сетевом ресурсе
 REMOTE_PRESETS_PATH = r"\\storage\Instal\printers\presets.ini"
@@ -132,7 +133,7 @@ def resolve_kyocera_path():
     if directory:
         try:
             if ensure_directory(directory):
-                default_config = "[Contents]\nUnit=0\nCompression=0\nCompressionGray=0\nScannerAddress=10.0.0.1\n\n[Authentication]\nUnit=0\nUserName=\nPassword=\n"
+                default_config = "[Contents]\nUnit=0\nCompression=0\nCompressionGray=0\nScannerAddress=192.168.1.1\n\n[Authentication]\nUnit=0\nUserName=\nPassword=\n"
                 with open(base, "w", encoding="utf-8") as f:
                     f.write(default_config)
                 logger.info(f"Создан файл конфигурации: {base}")
@@ -147,7 +148,7 @@ def resolve_kyocera_path():
         fallback_path = os.path.join(fallback_dir, "KM_TWAIN.ini")
 
         if not os.path.exists(fallback_path):
-            default_config = "[Contents]\nUnit=0\nCompression=0\nCompressionGray=0\nScannerAddress=10.0.0.1\n\n[Authentication]\nUnit=0\nUserName=\nPassword=\n"
+            default_config = "[Contents]\nUnit=0\nCompression=0\nCompressionGray=0\nScannerAddress=192.168.1.1\n\n[Authentication]\nUnit=0\nUserName=\nPassword=\n"
             with open(fallback_path, "w", encoding="utf-8") as f:
                 f.write(default_config)
             logger.warning(f"Используется резервный файл конфигурации: {fallback_path}")
@@ -162,7 +163,7 @@ def resolve_kyocera_path():
         temp_path = os.path.join(temp_dir, "KyoceraScanSelector_KM_TWAIN.ini")
 
         if not os.path.exists(temp_path):
-            default_config = "[Contents]\nUnit=0\nCompression=0\nCompressionGray=0\nScannerAddress=10.0.0.1\n\n[Authentication]\nUnit=0\nUserName=\nPassword=\n"
+            default_config = "[Contents]\nUnit=0\nCompression=0\nCompressionGray=0\nScannerAddress=192.168.1.1\n\n[Authentication]\nUnit=0\nUserName=\nPassword=\n"
             with open(temp_path, "w", encoding="utf-8") as f:
                 f.write(default_config)
             logger.critical(f"АВАРИЙНЫЙ РЕЖИМ: Используется временный файл: {temp_path}")
@@ -420,7 +421,7 @@ class KyoceraGUI(tk.Tk):
             logger.error(f"Ошибка чтения IP: {e}")
             current_ip = ""
 
-        self.var_ip = tk.StringVar(value=current_ip if current_ip else "10.0.0.1")
+        self.var_ip = tk.StringVar(value=current_ip if current_ip else "192.168.1.1")
 
         ip_frame = tk.Frame(frame_cur, bg="#f0f0f0")
         ip_frame.pack(fill="x")
