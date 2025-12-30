@@ -1,0 +1,5 @@
+# Зависимости для KyoceraScanSelector
+# Все основные модули (os, re, shutil, time, threading, configparser, tkinter) входят в стандартную библиотеку Python
+
+# Для сборки exe файла
+pyinstaller>=5.0
