@@ -6,11 +6,59 @@ import threading
 import configparser
 import tkinter as tk
 from tkinter import ttk, messagebox
+from tkinter import scrolledtext
 import logging
+from datetime import datetime
+from collections import deque
 
-# Настройка логирования
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# ------------------ GUI ЛОГГЕР ------------------
+class GUILogHandler(logging.Handler):
+    """Handler для сохранения логов в памяти для GUI"""
+    def __init__(self, maxlen=1000):
+        super().__init__()
+        self.log_records = deque(maxlen=maxlen)
+        self.callbacks = []
+
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            self.log_records.append({
+                'time': datetime.fromtimestamp(record.created),
+                'level': record.levelname,
+                'message': msg,
+                'record': record
+            })
+            # Уведомляем подписчиков о новом логе
+            for callback in self.callbacks:
+                try:
+                    callback(record)
+                except:
+                    pass
+        except Exception:
+            self.handleError(record)
+
+    def add_callback(self, callback):
+        """Добавить callback для уведомления о новых логах"""
+        self.callbacks.append(callback)
+
+    def get_logs(self, level=None):
+        """Получить все логи или логи определенного уровня"""
+        if level is None:
+            return list(self.log_records)
+        return [log for log in self.log_records if log['level'] == level]
+
+# Настройка логирования с GUI handler
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%H:%M:%S'
+)
 logger = logging.getLogger(__name__)
+
+# Создаем GUI handler
+gui_handler = GUILogHandler()
+gui_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%H:%M:%S'))
+logger.addHandler(gui_handler)
 
 # ------------------ ПУТИ ------------------
 KYOCERA_PATH_RAW = r"C:\Users\%username%\AppData\Roaming\Kyocera\KM_TWAIN"
@@ -66,7 +114,7 @@ def check_file_writable(file_path: str) -> bool:
         return False
 
 def resolve_kyocera_path():
-    """Определение и создание пути к файлу конфигурации Kyocera с обработкой ошибок"""
+    """Определение и создание пути к файлу конфигурации Kyocera с fallback"""
     base = KYOCERA_PATH
 
     # Проверяем существующие варианты файла
@@ -77,22 +125,53 @@ def resolve_kyocera_path():
         logger.info(f"Найден файл конфигурации: {base}.ini")
         return base + ".ini"
 
-    # Создаем директорию и файл, если их нет
-    directory = os.path.dirname(base)
-    if directory and not ensure_directory(directory):
-        logger.error(f"Не удалось создать директорию для конфигурации: {directory}")
-        raise PermissionError(f"Нет прав для создания директории: {directory}")
+    logger.warning(f"Файл конфигурации не найден: {base}")
 
-    # Создаем файл с настройками по умолчанию
+    # Попытка 1: Создать в стандартной директории
+    directory = os.path.dirname(base)
+    if directory:
+        try:
+            if ensure_directory(directory):
+                default_config = "[Contents]\nUnit=0\nCompression=0\nCompressionGray=0\nScannerAddress=10.0.0.1\n\n[Authentication]\nUnit=0\nUserName=\nPassword=\n"
+                with open(base, "w", encoding="utf-8") as f:
+                    f.write(default_config)
+                logger.info(f"Создан файл конфигурации: {base}")
+                return base
+        except Exception as e:
+            logger.warning(f"Не удалось создать файл в стандартной директории: {e}")
+
+    # Попытка 2: Создать в LOCALAPPDATA как fallback
     try:
-        default_config = "[Contents]\nUnit=0\nCompression=0\nCompressionGray=0\nScannerAddress=10.0.0.1\n\n[Authentication]\nUnit=0\nUserName=\nPassword=\n"
-        with open(base, "w", encoding="utf-8") as f:
-            f.write(default_config)
-        logger.info(f"Создан файл конфигурации по умолчанию: {base}")
-        return base
-    except (OSError, IOError, PermissionError) as e:
-        logger.error(f"Не удалось создать файл конфигурации: {base} - {e}")
-        raise PermissionError(f"Нет прав для создания файла конфигурации: {base}")
+        fallback_dir = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "KyoceraScanSelector")
+        ensure_directory(fallback_dir)
+        fallback_path = os.path.join(fallback_dir, "KM_TWAIN.ini")
+
+        if not os.path.exists(fallback_path):
+            default_config = "[Contents]\nUnit=0\nCompression=0\nCompressionGray=0\nScannerAddress=10.0.0.1\n\n[Authentication]\nUnit=0\nUserName=\nPassword=\n"
+            with open(fallback_path, "w", encoding="utf-8") as f:
+                f.write(default_config)
+            logger.warning(f"Используется резервный файл конфигурации: {fallback_path}")
+
+        return fallback_path
+    except Exception as e:
+        logger.error(f"Критическая ошибка: не удалось создать даже резервный файл: {e}")
+
+    # Попытка 3: Используем временный файл в TEMP
+    try:
+        temp_dir = os.environ.get("TEMP", ".")
+        temp_path = os.path.join(temp_dir, "KyoceraScanSelector_KM_TWAIN.ini")
+
+        if not os.path.exists(temp_path):
+            default_config = "[Contents]\nUnit=0\nCompression=0\nCompressionGray=0\nScannerAddress=10.0.0.1\n\n[Authentication]\nUnit=0\nUserName=\nPassword=\n"
+            with open(temp_path, "w", encoding="utf-8") as f:
+                f.write(default_config)
+            logger.critical(f"АВАРИЙНЫЙ РЕЖИМ: Используется временный файл: {temp_path}")
+
+        return temp_path
+    except Exception as e:
+        logger.critical(f"ПОЛНЫЙ ОТКАЗ: Невозможно создать файл конфигурации: {e}")
+        # В самом крайнем случае используем in-memory конфигурацию
+        raise RuntimeError("Невозможно создать файл конфигурации ни в одной из доступных директорий")
 
 def try_copy_remote_to_cache(remote_path: str) -> bool:
     """Попытка скопировать файл пресетов из сети в локальный кэш"""
@@ -266,17 +345,48 @@ class KyoceraGUI(tk.Tk):
         style.configure('Action.TButton', font=('Segoe UI', 9, 'bold'), padding=6)
 
         # Инициализация пути к конфигурации с обработкой ошибок
+        self.kyocera_ini_path = None
+        self.has_critical_errors = False
+
         try:
             self.kyocera_ini_path = resolve_kyocera_path()
             logger.info(f"Путь к конфигурации: {self.kyocera_ini_path}")
-        except PermissionError as e:
+
+            # Проверяем, не используется ли аварийный режим
+            if "TEMP" in self.kyocera_ini_path or "KyoceraScanSelector_KM_TWAIN" in self.kyocera_ini_path:
+                self.has_critical_errors = True
+                logger.warning("Программа работает в аварийном режиме")
+                # Показываем предупреждение но не закрываем программу
+                self.after(1000, lambda: self._show_startup_warning(
+                    "Аварийный режим",
+                    f"Файл конфигурации создан во временной директории:\n{self.kyocera_ini_path}\n\n"
+                    "Рекомендуется запустить программу от имени администратора для корректной работы."
+                ))
+
+        except RuntimeError as e:
+            # Полный отказ - невозможно создать файл конфигурации
+            logger.critical(f"Критическая ошибка инициализации: {e}")
+            self.has_critical_errors = True
+
+            # Создаем временный путь для работы в режиме только-просмотр
+            self.kyocera_ini_path = ":memory:"  # Специальный маркер
+
             messagebox.showerror(
-                "Ошибка прав доступа",
-                f"Нет прав для создания файла конфигурации.\n\n{e}\n\nПопробуйте запустить программу от имени администратора."
+                "Критическая ошибка",
+                f"{e}\n\nПрограмма будет работать в режиме только для просмотра.\n\n"
+                "Запустите программу от имени администратора или проверьте диагностику."
             )
-            logger.critical(f"Критическая ошибка: {e}")
-            self.destroy()
-            return
+
+        except Exception as e:
+            logger.critical(f"Неожиданная ошибка при инициализации: {e}")
+            self.has_critical_errors = True
+            self.kyocera_ini_path = ":memory:"
+
+            messagebox.showerror(
+                "Неожиданная ошибка",
+                f"Произошла ошибка при инициализации:\n{e}\n\n"
+                "Программа будет работать с ограниченным функционалом."
+            )
 
         # Создание меню
         self._create_menu()
@@ -299,7 +409,17 @@ class KyoceraGUI(tk.Tk):
                                    padding=15, style='Custom.TLabelframe')
         frame_cur.pack(fill="x", pady=(0, 15))
 
-        current_ip = read_scanner_ip(self.kyocera_ini_path)
+        # Читаем текущий IP с обработкой ошибок
+        try:
+            if self.kyocera_ini_path and self.kyocera_ini_path != ":memory:":
+                current_ip = read_scanner_ip(self.kyocera_ini_path)
+            else:
+                current_ip = ""
+                logger.warning("Работа в режиме без файла конфигурации")
+        except Exception as e:
+            logger.error(f"Ошибка чтения IP: {e}")
+            current_ip = ""
+
         self.var_ip = tk.StringVar(value=current_ip if current_ip else "10.0.0.1")
 
         ip_frame = tk.Frame(frame_cur, bg="#f0f0f0")
@@ -364,12 +484,18 @@ class KyoceraGUI(tk.Tk):
         menubar = tk.Menu(self)
         self.config(menu=menubar)
 
+        # Меню "Инструменты"
+        tools_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Инструменты", menu=tools_menu)
+        tools_menu.add_command(label="📋 Журнал событий", command=self._show_event_log)
+        tools_menu.add_command(label="⚙ Техническая информация", command=self._show_tech_info)
+        tools_menu.add_separator()
+        tools_menu.add_command(label="🔍 Диагностика", command=self._show_diagnostics)
+
         # Меню "Справка"
         help_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Справка", menu=help_menu)
         help_menu.add_command(label="О программе", command=self._show_about)
-        help_menu.add_separator()
-        help_menu.add_command(label="Техническая информация", command=self._show_tech_info)
 
     def _show_about(self):
         """Показать окно 'О программе'"""
@@ -499,6 +625,288 @@ IP адрес сканера: {self.var_ip.get()}
         self.clipboard_append(text)
         messagebox.showinfo("Скопировано", f"'{text}' скопирован в буфер обмена")
 
+    def _show_startup_warning(self, title, message):
+        """Показать предупреждение при старте с предложением диагностики"""
+        result = messagebox.askquestion(
+            title,
+            f"{message}\n\nОткрыть диагностику для подробной информации?",
+            icon='warning'
+        )
+        if result == 'yes':
+            self._show_diagnostics()
+
+    def _show_event_log(self):
+        """Показать окно журнала событий"""
+        log_window = tk.Toplevel(self)
+        log_window.title("Журнал событий")
+        log_window.geometry("800x500")
+        log_window.resizable(True, True)
+        log_window.configure(bg="#f0f0f0")
+        log_window.transient(self)
+
+        # Заголовок
+        header = tk.Frame(log_window, bg="#2d5f8d", height=50)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+
+        tk.Label(header, text="📋 Журнал событий", font=('Segoe UI', 12, 'bold'),
+                bg="#2d5f8d", fg="white").pack(side="left", padx=15, pady=12)
+
+        # Кнопка очистки
+        tk.Button(header, text="🗑 Очистить", command=lambda: self._clear_log(text_widget),
+                 bg="#c93838", fg="white", relief="flat", padx=10, pady=5,
+                 font=('Segoe UI', 9)).pack(side="right", padx=15)
+
+        # Фильтр уровня
+        filter_frame = tk.Frame(log_window, bg="#f0f0f0")
+        filter_frame.pack(fill="x", padx=15, pady=10)
+
+        tk.Label(filter_frame, text="Уровень:", bg="#f0f0f0",
+                font=('Segoe UI', 9)).pack(side="left", padx=(0, 5))
+
+        level_var = tk.StringVar(value="ALL")
+        level_combo = ttk.Combobox(filter_frame, textvariable=level_var,
+                                   values=["ALL", "ERROR", "WARNING", "INFO", "DEBUG"],
+                                   state="readonly", width=10)
+        level_combo.pack(side="left", padx=5)
+
+        # Текстовая область для логов
+        text_frame = tk.Frame(log_window, bg="#f0f0f0")
+        text_frame.pack(fill="both", expand=True, padx=15, pady=(0, 15))
+
+        scrollbar = tk.Scrollbar(text_frame)
+        scrollbar.pack(side="right", fill="y")
+
+        text_widget = tk.Text(text_frame, wrap="word", font=('Consolas', 9),
+                             bg="#1e1e1e", fg="#d4d4d4", yscrollcommand=scrollbar.set,
+                             relief="solid", bd=1, padx=10, pady=10)
+        text_widget.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=text_widget.yview)
+
+        # Цветовая схема для разных уровней
+        text_widget.tag_config("ERROR", foreground="#f48771")
+        text_widget.tag_config("WARNING", foreground="#dcdcaa")
+        text_widget.tag_config("INFO", foreground="#4ec9b0")
+        text_widget.tag_config("DEBUG", foreground="#9cdcfe")
+        text_widget.tag_config("TIMESTAMP", foreground="#808080")
+
+        def update_logs():
+            """Обновить отображение логов"""
+            level = level_var.get()
+            text_widget.config(state="normal")
+            text_widget.delete("1.0", "end")
+
+            logs = gui_handler.get_logs() if level == "ALL" else gui_handler.get_logs(level)
+
+            for log in logs:
+                timestamp = log['time'].strftime('%H:%M:%S')
+                level_name = log['level']
+                message = log['message']
+
+                # Вставляем время
+                text_widget.insert("end", f"[{timestamp}] ", "TIMESTAMP")
+                # Вставляем уровень
+                text_widget.insert("end", f"[{level_name:8}] ", level_name)
+                # Вставляем сообщение
+                text_widget.insert("end", f"{message}\n")
+
+            text_widget.config(state="disabled")
+            text_widget.see("end")  # Прокрутка вниз
+
+        # Обновляем при изменении фильтра
+        level_combo.bind("<<ComboboxSelected>>", lambda e: update_logs())
+
+        # Автообновление при новых логах
+        def on_new_log(record):
+            log_window.after(100, update_logs)
+
+        gui_handler.add_callback(on_new_log)
+
+        # Первоначальное заполнение
+        update_logs()
+
+        # Статистика
+        stats_frame = tk.Frame(log_window, bg="#e8e8e8", relief="solid", bd=1)
+        stats_frame.pack(fill="x", padx=15, pady=(0, 15))
+
+        all_logs = gui_handler.get_logs()
+        errors = len([l for l in all_logs if l['level'] == 'ERROR'])
+        warnings = len([l for l in all_logs if l['level'] == 'WARNING'])
+
+        tk.Label(stats_frame, text=f"Всего: {len(all_logs)} | Ошибок: {errors} | Предупреждений: {warnings}",
+                bg="#e8e8e8", font=('Segoe UI', 9), fg="#444").pack(pady=8)
+
+    def _clear_log(self, text_widget):
+        """Очистить журнал"""
+        if messagebox.askyesno("Подтверждение", "Очистить журнал событий?"):
+            gui_handler.log_records.clear()
+            text_widget.config(state="normal")
+            text_widget.delete("1.0", "end")
+            text_widget.config(state="disabled")
+            logger.info("Журнал событий очищен")
+
+    def _show_diagnostics(self):
+        """Показать диагностическую информацию"""
+        diag_window = tk.Toplevel(self)
+        diag_window.title("Диагностика системы")
+        diag_window.geometry("700x600")
+        diag_window.resizable(True, True)
+        diag_window.configure(bg="#f0f0f0")
+        diag_window.transient(self)
+
+        # Заголовок
+        header = tk.Frame(diag_window, bg="#2d5f8d", height=50)
+        header.pack(fill="x")
+        header.pack_propagate(False)
+
+        tk.Label(header, text="🔍 Диагностика системы", font=('Segoe UI', 12, 'bold'),
+                bg="#2d5f8d", fg="white").pack(pady=12)
+
+        # Текстовая область
+        text_frame = tk.Frame(diag_window, bg="#f0f0f0")
+        text_frame.pack(fill="both", expand=True, padx=15, pady=15)
+
+        scrollbar = tk.Scrollbar(text_frame)
+        scrollbar.pack(side="right", fill="y")
+
+        text_widget = scrolledtext.ScrolledText(text_frame, wrap="word", font=('Consolas', 9),
+                                                bg="#ffffff", fg="#333", yscrollcommand=scrollbar.set,
+                                                relief="solid", bd=1)
+        text_widget.pack(side="left", fill="both", expand=True)
+
+        # Выполняем диагностику
+        diag_text = self._run_diagnostics()
+        text_widget.insert("1.0", diag_text)
+        text_widget.config(state="disabled")
+
+        # Кнопка копирования
+        btn_frame = tk.Frame(diag_window, bg="#f0f0f0")
+        btn_frame.pack(fill="x", padx=15, pady=(0, 15))
+
+        tk.Button(btn_frame, text="📋 Копировать диагностику",
+                 command=lambda: self._copy_to_clipboard(diag_text),
+                 bg="#2d5f8d", fg="white", relief="flat", padx=15, pady=8,
+                 font=('Segoe UI', 9, 'bold')).pack()
+
+    def _run_diagnostics(self):
+        """Запустить полную диагностику"""
+        lines = []
+        lines.append("=" * 70)
+        lines.append("ДИАГНОСТИКА KYOCERA SCAN SELECTOR")
+        lines.append(f"Время: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append("=" * 70)
+        lines.append("")
+
+        # 1. Проверка переменных окружения
+        lines.append("1. ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ")
+        lines.append("-" * 70)
+        try:
+            lines.append(f"  USERNAME: {os.environ.get('USERNAME', 'НЕ НАЙДЕНО')}")
+            lines.append(f"  USERPROFILE: {os.environ.get('USERPROFILE', 'НЕ НАЙДЕНО')}")
+            lines.append(f"  APPDATA: {os.environ.get('APPDATA', 'НЕ НАЙДЕНО')}")
+            lines.append(f"  LOCALAPPDATA: {os.environ.get('LOCALAPPDATA', 'НЕ НАЙДЕНО')}")
+            lines.append(f"  TEMP: {os.environ.get('TEMP', 'НЕ НАЙДЕНО')}")
+            lines.append("  ✓ Переменные окружения доступны")
+        except Exception as e:
+            lines.append(f"  ✗ Ошибка: {e}")
+        lines.append("")
+
+        # 2. Проверка путей
+        lines.append("2. ПУТИ К ФАЙЛАМ")
+        lines.append("-" * 70)
+        lines.append(f"  Конфигурация Kyocera:")
+        lines.append(f"    {self.kyocera_ini_path}")
+        lines.append(f"    Существует: {'Да' if os.path.exists(self.kyocera_ini_path) else 'Нет'}")
+        if os.path.exists(self.kyocera_ini_path):
+            lines.append(f"    Чтение: {'Да' if os.access(self.kyocera_ini_path, os.R_OK) else 'Нет'}")
+            lines.append(f"    Запись: {'Да' if os.access(self.kyocera_ini_path, os.W_OK) else 'Нет'}")
+            try:
+                size = os.path.getsize(self.kyocera_ini_path)
+                lines.append(f"    Размер: {size} байт")
+            except:
+                pass
+
+        lines.append(f"  Кэш:")
+        lines.append(f"    {LOCAL_CACHE_DIR}")
+        lines.append(f"    Существует: {'Да' if os.path.exists(LOCAL_CACHE_DIR) else 'Нет'}")
+        if os.path.exists(LOCAL_CACHE_DIR):
+            lines.append(f"    Запись: {'Да' if os.access(LOCAL_CACHE_DIR, os.W_OK) else 'Нет'}")
+
+        lines.append(f"  Сетевой файл:")
+        lines.append(f"    {REMOTE_PRESETS_PATH}")
+        lines.append(f"    Доступен: {'Да' if os.path.exists(REMOTE_PRESETS_PATH) else 'Нет'}")
+        lines.append("")
+
+        # 3. Проверка текущего IP
+        lines.append("3. ТЕКУЩАЯ КОНФИГУРАЦИЯ")
+        lines.append("-" * 70)
+        lines.append(f"  IP адрес сканера: {self.var_ip.get()}")
+        lines.append(f"  Валидность IP: {'Да' if is_valid_ip(self.var_ip.get()) else 'Нет'}")
+        lines.append("")
+
+        # 4. Проверка пресетов
+        lines.append("4. ПРЕСЕТЫ")
+        lines.append("-" * 70)
+        lines.append(f"  Загружено пресетов: {len(self.presets)}")
+        if self.presets:
+            lines.append(f"  Текущий выбор: {self.var_preset.get() or 'Не выбран'}")
+            lines.append("  Список:")
+            for name, ip in sorted(self.presets.items())[:10]:  # Первые 10
+                lines.append(f"    - {name}: {ip}")
+            if len(self.presets) > 10:
+                lines.append(f"    ... и еще {len(self.presets) - 10}")
+        else:
+            lines.append("  ⚠ Пресеты не загружены")
+        lines.append("")
+
+        # 5. Ошибки из логов
+        lines.append("5. НЕДАВНИЕ ОШИБКИ")
+        lines.append("-" * 70)
+        errors = gui_handler.get_logs("ERROR")
+        if errors:
+            for err in errors[-5:]:  # Последние 5 ошибок
+                lines.append(f"  [{err['time'].strftime('%H:%M:%S')}] {err['message']}")
+        else:
+            lines.append("  ✓ Ошибок не обнаружено")
+        lines.append("")
+
+        # 6. Предупреждения
+        lines.append("6. НЕДАВНИЕ ПРЕДУПРЕЖДЕНИЯ")
+        lines.append("-" * 70)
+        warnings = gui_handler.get_logs("WARNING")
+        if warnings:
+            for warn in warnings[-5:]:  # Последние 5 предупреждений
+                lines.append(f"  [{warn['time'].strftime('%H:%M:%S')}] {warn['message']}")
+        else:
+            lines.append("  ✓ Предупреждений нет")
+        lines.append("")
+
+        # 7. Рекомендации
+        lines.append("7. РЕКОМЕНДАЦИИ")
+        lines.append("-" * 70)
+        recommendations = []
+
+        if not os.path.exists(self.kyocera_ini_path):
+            recommendations.append("  ⚠ Файл конфигурации не найден. Создайте его вручную или запустите программу от имени администратора.")
+
+        if not os.path.exists(REMOTE_PRESETS_PATH):
+            recommendations.append("  ⚠ Сетевой файл пресетов недоступен. Проверьте сетевое подключение и права доступа.")
+
+        if not self.presets:
+            recommendations.append("  ⚠ Пресеты не загружены. Проверьте доступность сетевого ресурса или создайте локальный кэш.")
+
+        if errors:
+            recommendations.append(f"  ⚠ Обнаружено {len(errors)} ошибок. Проверьте журнал событий для подробностей.")
+
+        if not recommendations:
+            recommendations.append("  ✓ Проблем не обнаружено. Система работает нормально.")
+
+        lines.extend(recommendations)
+        lines.append("")
+        lines.append("=" * 70)
+
+        return "\n".join(lines)
+
     def refresh_presets(self):
         """Обновление списка пресетов из сети или кэша"""
         try:
@@ -589,6 +997,19 @@ IP адрес сканера: {self.var_ip.get()}
                 "Введите правильный IP адрес.\n\nПример: 192.168.1.100"
             )
             logger.warning(f"Попытка сохранить некорректный IP: {ip}")
+            return
+
+        # Проверка режима работы
+        if not self.kyocera_ini_path or self.kyocera_ini_path == ":memory:":
+            messagebox.showwarning(
+                "Режим только для просмотра",
+                "Сохранение недоступно в текущем режиме.\n\n"
+                "Файл конфигурации не может быть создан.\n"
+                "Запустите программу от имени администратора или проверьте диагностику."
+            )
+            self.var_status.set("⚠ Сохранение недоступно")
+            self.status_label.config(fg="#d4a017")
+            logger.warning("Попытка сохранения в режиме ':memory:'")
             return
 
         try:
