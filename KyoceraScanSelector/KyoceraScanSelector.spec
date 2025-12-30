@@ -5,7 +5,7 @@ a = Analysis(
     ['KyoceraScanSelector.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('printer.ico', '.')],  # Включаем иконку в сборку
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
@@ -35,4 +35,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
+    icon='printer.ico',  # Иконка для exe файла
 )
